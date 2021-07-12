@@ -22,33 +22,33 @@
 
 // The first few files have already been covered in previous examples and will
 // thus not be further commented on.
-#include <deal.II/base/quadrature_lib.h>
 #include <deal.II/base/function.h>
+#include <deal.II/base/quadrature_lib.h>
+#include <deal.II/base/timer.h>
 #include <deal.II/base/utilities.h>
-
-#include <deal.II/lac/vector.h>
-#include <deal.II/lac/full_matrix.h>
-#include <deal.II/lac/sparse_matrix.h>
-#include <deal.II/lac/dynamic_sparsity_pattern.h>
-#include <deal.II/lac/solver_cg.h>
-#include <deal.II/lac/precondition.h>
-#include <deal.II/lac/affine_constraints.h>
-
-#include <deal.II/grid/tria.h>
-#include <deal.II/grid/grid_generator.h>
-#include <deal.II/grid/grid_refinement.h>
 
 #include <deal.II/dofs/dof_handler.h>
 #include <deal.II/dofs/dof_tools.h>
 
-#include <deal.II/fe/fe_values.h>
 #include <deal.II/fe/fe_q.h>
+#include <deal.II/fe/fe_values.h>
 
-#include <deal.II/numerics/vector_tools.h>
-#include <deal.II/numerics/matrix_tools.h>
+#include <deal.II/grid/grid_generator.h>
+#include <deal.II/grid/grid_refinement.h>
+#include <deal.II/grid/tria.h>
+
+#include <deal.II/lac/affine_constraints.h>
+#include <deal.II/lac/dynamic_sparsity_pattern.h>
+#include <deal.II/lac/full_matrix.h>
+#include <deal.II/lac/precondition.h>
+#include <deal.II/lac/solver_cg.h>
+#include <deal.II/lac/sparse_matrix.h>
+#include <deal.II/lac/vector.h>
+
 #include <deal.II/numerics/data_out.h>
 #include <deal.II/numerics/error_estimator.h>
-
+#include <deal.II/numerics/matrix_tools.h>
+#include <deal.II/numerics/vector_tools.h>
 
 #include <fstream>
 #include <iostream>
@@ -100,17 +100,26 @@ namespace Step15
   {
   public:
     MinimalSurfaceProblem();
-    void run();
+    void
+    run();
 
   private:
-    void   setup_system(const bool initial_step);
-    void   assemble_system();
-    void   solve();
-    void   refine_mesh();
-    void   set_boundary_values();
-    double compute_residual(const double alpha) const;
-    double determine_step_length() const;
-    void   output_results(const unsigned int refinement_cycle) const;
+    void
+    setup_system(const bool initial_step);
+    void
+    assemble_system();
+    void
+    solve();
+    void
+    refine_mesh();
+    void
+    set_boundary_values();
+    double
+    compute_residual(const double alpha) const;
+    double
+    determine_step_length() const;
+    void
+    output_results(const unsigned int refinement_cycle) const;
 
     Triangulation<dim> triangulation;
 
@@ -121,6 +130,9 @@ namespace Step15
 
     SparsityPattern      sparsity_pattern;
     SparseMatrix<double> system_matrix;
+
+    TimerOutput computing_timer;
+
 
     Vector<double> current_solution;
     Vector<double> newton_update;
@@ -136,14 +148,15 @@ namespace Step15
   class BoundaryValues : public Function<dim>
   {
   public:
-    virtual double value(const Point<dim> & p,
-                         const unsigned int component = 0) const override;
+    virtual double
+    value(const Point<dim> &p, const unsigned int component = 0) const override;
   };
 
 
   template <int dim>
-  double BoundaryValues<dim>::value(const Point<dim> &p,
-                                    const unsigned int /*component*/) const
+  double
+  BoundaryValues<dim>::value(const Point<dim> &p,
+                             const unsigned int /*component*/) const
   {
     return std::sin(2 * numbers::PI * (p[0] + p[1]));
   }
@@ -159,6 +172,7 @@ namespace Step15
   MinimalSurfaceProblem<dim>::MinimalSurfaceProblem()
     : dof_handler(triangulation)
     , fe(2)
+    , computing_timer(std::cout, TimerOutput::summary, TimerOutput::wall_times)
   {}
 
 
@@ -175,7 +189,8 @@ namespace Step15
   // (specifically, in <code>refine_mesh()</code>).
 
   template <int dim>
-  void MinimalSurfaceProblem<dim>::setup_system(const bool initial_step)
+  void
+  MinimalSurfaceProblem<dim>::setup_system(const bool initial_step)
   {
     if (initial_step)
       {
@@ -217,8 +232,11 @@ namespace Step15
   // vectors, as well as for the gradients of the previous solution at the
   // quadrature points. We then start the loop over all cells:
   template <int dim>
-  void MinimalSurfaceProblem<dim>::assemble_system()
+  void
+  MinimalSurfaceProblem<dim>::assemble_system()
   {
+    TimerOutput::Scope t(computing_timer, "Matrix Assembly");
+
     const QGauss<dim> quadrature_formula(fe.degree + 1);
 
     system_matrix = 0;
@@ -246,15 +264,7 @@ namespace Step15
 
         fe_values.reinit(cell);
 
-        // For the assembly of the linear system, we have to obtain the values
-        // of the previous solution's gradients at the quadrature
-        // points. There is a standard way of doing this: the
-        // FEValues::get_function_gradients function takes a vector that
-        // represents a finite element field defined on a DoFHandler, and
-        // evaluates the gradients of this field at the quadrature points of the
-        // cell with which the FEValues object has last been reinitialized.
-        // The values of the gradients at all quadrature points are then written
-        // into the second argument:
+        // Get old solution gradients
         fe_values.get_function_gradients(current_solution,
                                          old_solution_gradients);
 
@@ -330,7 +340,8 @@ namespace Step15
   // process we update the current solution by setting
   // $u^{n+1}=u^n+\alpha^n\;\delta u^n$.
   template <int dim>
-  void MinimalSurfaceProblem<dim>::solve()
+  void
+  MinimalSurfaceProblem<dim>::solve()
   {
     SolverControl            solver_control(system_rhs.size(),
                                  system_rhs.l2_norm() * 1e-6);
@@ -355,7 +366,8 @@ namespace Step15
   // one which we do with the help of the SolutionTransfer class. The process
   // is slightly convoluted, so let us describe it in detail:
   template <int dim>
-  void MinimalSurfaceProblem<dim>::refine_mesh()
+  void
+  MinimalSurfaceProblem<dim>::refine_mesh()
   {
     Vector<float> estimated_error_per_cell(triangulation.n_active_cells());
 
@@ -459,7 +471,8 @@ namespace Step15
   // remains continuous. This is what the call in the last line of this
   // function does.
   template <int dim>
-  void MinimalSurfaceProblem<dim>::set_boundary_values()
+  void
+  MinimalSurfaceProblem<dim>::set_boundary_values()
   {
     std::map<types::global_dof_index, double> boundary_values;
     VectorTools::interpolate_boundary_values(dof_handler,
@@ -491,7 +504,8 @@ namespace Step15
   // is followed by the same boilerplate code we use for all integration
   // operations:
   template <int dim>
-  double MinimalSurfaceProblem<dim>::compute_residual(const double alpha) const
+  double
+  MinimalSurfaceProblem<dim>::compute_residual(const double alpha) const
   {
     Vector<double> residual(dof_handler.n_dofs());
 
@@ -585,7 +599,8 @@ namespace Step15
   // convergence of Newton's method. We will discuss better strategies below
   // in the results section, and step-77 also covers this aspect.
   template <int dim>
-  double MinimalSurfaceProblem<dim>::determine_step_length() const
+  double
+  MinimalSurfaceProblem<dim>::determine_step_length() const
   {
     return 0.1;
   }
@@ -598,7 +613,8 @@ namespace Step15
   // (and the Newton update) in graphical form as a VTU file. It is entirely the
   // same as what has been used in previous tutorials.
   template <int dim>
-  void MinimalSurfaceProblem<dim>::output_results(
+  void
+  MinimalSurfaceProblem<dim>::output_results(
     const unsigned int refinement_cycle) const
   {
     DataOut<dim> data_out;
@@ -629,7 +645,8 @@ namespace Step15
   // ensure that the first Newton iterate already has the correct
   // boundary values, as discussed in the introduction.
   template <int dim>
-  void MinimalSurfaceProblem<dim>::run()
+  void
+  MinimalSurfaceProblem<dim>::run()
   {
     GridGenerator::hyper_ball(triangulation);
     triangulation.refine_global(2);
@@ -667,7 +684,7 @@ namespace Step15
         // mesh refinement cycle.
         std::cout << "  Initial residual: " << compute_residual(0) << std::endl;
 
-        for (unsigned int inner_iteration = 0; inner_iteration < 5;
+        for (unsigned int inner_iteration = 0; inner_iteration < 10;
              ++inner_iteration)
           {
             assemble_system();
@@ -677,6 +694,8 @@ namespace Step15
 
             std::cout << "  Residual: " << compute_residual(0) << std::endl;
           }
+
+        computing_timer.print_summary();
 
         output_results(refinement_cycle);
 
@@ -691,7 +710,8 @@ namespace Step15
 
 // Finally the main function. This follows the scheme of all other main
 // functions:
-int main()
+int
+main()
 {
   try
     {
