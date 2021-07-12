@@ -245,7 +245,7 @@ namespace Step15
     FEValues<dim> fe_values(fe,
                             quadrature_formula,
                             update_gradients | update_quadrature_points |
-                              update_JxW_values);
+                              update_JxW_values | update_hessians);
 
     const unsigned int dofs_per_cell = fe.n_dofs_per_cell();
     const unsigned int n_q_points    = quadrature_formula.size();
@@ -254,6 +254,14 @@ namespace Step15
     Vector<double>     cell_rhs(dofs_per_cell);
 
     std::vector<Tensor<1, dim>> old_solution_gradients(n_q_points);
+    std::vector<double>         old_solution_laplacians(n_q_points);
+
+    std::vector<Tensor<2, dim>> hess_phi_u(dofs_per_cell);
+    std::vector<double>         laplacian_phi_u(dofs_per_cell);
+    std::vector<double>         phi_u(dofs_per_cell);
+    std::vector<Tensor<1, dim>> grad_phi_u(dofs_per_cell);
+
+
 
     std::vector<types::global_dof_index> local_dof_indices(dofs_per_cell);
 
@@ -264,9 +272,11 @@ namespace Step15
 
         fe_values.reinit(cell);
 
-        // Get old solution gradients
+        // Get old solution gradients and laplacians
         fe_values.get_function_gradients(current_solution,
                                          old_solution_gradients);
+        fe_values.get_function_laplacians(current_solution,
+                                          old_solution_laplacians);
 
         // With this, we can then do the integration loop over all quadrature
         // points and shape functions.  Having just computed the gradients of
@@ -281,25 +291,36 @@ namespace Step15
               1.0 / std::sqrt(1 + old_solution_gradients[q] *
                                     old_solution_gradients[q]);
 
+            for (unsigned int k = 0; k < dofs_per_cell; ++k)
+              {
+                grad_phi_u[k]      = fe_values.shape_grad(k, q);
+                hess_phi_u[k]      = fe_values.shape_hessian(k, q);
+                laplacian_phi_u[k] = trace(hess_phi_u[k]);
+              }
+
+            const double JxW = fe_values.JxW(q);
+
             for (unsigned int i = 0; i < dofs_per_cell; ++i)
               {
                 for (unsigned int j = 0; j < dofs_per_cell; ++j)
-                  cell_matrix(i, j) +=
-                    (((fe_values.shape_grad(i, q)      // ((\nabla \phi_i
-                       * coeff                         //   * a_n
-                       * fe_values.shape_grad(j, q))   //   * \nabla \phi_j)
-                      -                                //  -
-                      (fe_values.shape_grad(i, q)      //  (\nabla \phi_i
-                       * coeff * coeff * coeff         //   * a_n^3
-                       * (fe_values.shape_grad(j, q)   //   * (\nabla \phi_j
-                          * old_solution_gradients[q]) //      * \nabla u_n)
-                       * old_solution_gradients[q]))   //   * \nabla u_n)))
-                     * fe_values.JxW(q));              // * dx
+                  {
+                    cell_matrix(i, j) +=
+                      (((grad_phi_u[i]                   // ((\nabla \phi_i
+                         * coeff                         //   * a_n
+                         * grad_phi_u[j])                //   * \nabla \phi_j)
+                        -                                //  -
+                        (grad_phi_u[i]                   //  (\nabla \phi_i
+                         * coeff * coeff * coeff         //   * a_n^3
+                         * (grad_phi_u[j]                //   * (\nabla \phi_j
+                            * old_solution_gradients[q]) //      * \nabla u_n)
+                         * old_solution_gradients[q]))   //   * \nabla u_n)))
+                       * JxW);                           // * dx
+                  }
 
-                cell_rhs(i) -= (fe_values.shape_grad(i, q)  // \nabla \phi_i
+                cell_rhs(i) -= (grad_phi_u[i]               // \nabla \phi_i
                                 * coeff                     // * a_n
                                 * old_solution_gradients[q] // * u_n
-                                * fe_values.JxW(q));        // * dx
+                                * JxW);                     // * dx
               }
           }
 
@@ -343,6 +364,8 @@ namespace Step15
   void
   MinimalSurfaceProblem<dim>::solve()
   {
+    TimerOutput::Scope t(computing_timer, "Solve linear system");
+
     SolverControl            solver_control(system_rhs.size(),
                                  system_rhs.l2_norm() * 1e-6);
     SolverCG<Vector<double>> solver(solver_control);
@@ -684,7 +707,7 @@ namespace Step15
         // mesh refinement cycle.
         std::cout << "  Initial residual: " << compute_residual(0) << std::endl;
 
-        for (unsigned int inner_iteration = 0; inner_iteration < 10;
+        for (unsigned int inner_iteration = 0; inner_iteration < 5;
              ++inner_iteration)
           {
             assemble_system();
@@ -696,13 +719,14 @@ namespace Step15
           }
 
         computing_timer.print_summary();
+        computing_timer.reset();
 
         output_results(refinement_cycle);
 
         ++refinement_cycle;
         std::cout << std::endl;
       }
-    while (last_residual_norm > 1e-3);
+    while (last_residual_norm > 2.5e-2);
   }
 } // namespace Step15
 
@@ -717,8 +741,11 @@ main()
     {
       using namespace Step15;
 
-      MinimalSurfaceProblem<2> laplace_problem_2d;
-      laplace_problem_2d.run();
+      // MinimalSurfaceProblem<2> laplace_problem_2d;
+      // laplace_problem_2d.run();
+
+      MinimalSurfaceProblem<3> laplace_problem_3d;
+      laplace_problem_3d.run();
     }
   catch (std::exception &exc)
     {
