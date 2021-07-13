@@ -13,33 +13,35 @@ public:
 
 
 template <int dim>
-class AssemblerClassic : public AssemblerBase<dim>
+class AssemblerMain : public AssemblerBase<dim>
 {
 public:
   virtual void
   assemble(MinimalSurfaceScratch<dim> &scratch) override
   {
-    const auto &phi_u           = scratch.get_phi_u();
-    const auto &grad_phi_u      = scratch.get_grad_phi_u();
-    const auto &laplacian_phi_u = scratch.get_laplacian_phi_u();
+    const auto &phi_u      = scratch.phi_u;
+    const auto &grad_phi_u = scratch.grad_phi_u;
 
-    const auto &old_solution_laplacians = scratch.get_solution_laplacians();
-    const auto &old_solution_gradients  = scratch.get_solution_gradients();
+    const auto &old_solution_gradients = scratch.old_solution_gradients;
 
-    const auto &       JxW_vec    = scratch.get_JxW();
-    const unsigned int n_q_points = scratch.get_n_q_points();
-    const unsigned int n_dofs     = scratch.get_n_dofs();
+    const auto &       JxW_vec    = scratch.JxW;
+    const unsigned int n_q_points = scratch.n_q_points;
+    const unsigned int n_dofs     = scratch.n_dofs;
 
-    auto &cell_matrix = scratch.get_cell_matrix();
-    auto &cell_rhs    = scratch.get_cell_rhs();
+    auto &strong_residual = scratch.strong_residual;
+    auto &strong_jacobian = scratch.strong_jacobian;
+
+    auto &cell_matrix = scratch.cell_matrix;
+    auto &cell_rhs    = scratch.cell_rhs;
+
+    const double h = scratch.cell_size;
 
     for (unsigned int q = 0; q < n_q_points; ++q)
       {
         const double coeff = 1.0 / std::sqrt(1 + old_solution_gradients[q] *
                                                    old_solution_gradients[q]);
 
-        const double tau =
-          0.; // 1. / std::sqrt(9 * std::pow(4 * coeff / (h * h), 2));
+        const double tau = 1. / std::sqrt(9 * std::pow(4 * coeff / (h * h), 2));
 
         const double JxW = JxW_vec[q];
 
@@ -61,15 +63,53 @@ public:
 
                 // Pseudo GLS term
                 cell_matrix(i, j) +=
-                  tau * phi_u[q][i] * coeff * laplacian_phi_u[q][j] * JxW;
+                  tau * phi_u[q][i] * strong_jacobian[q][j] * JxW;
               }
 
             cell_rhs(i) -=
               (grad_phi_u[q][i] * old_solution_gradients[q] * coeff * JxW);
 
             // Pseudo GLS term
-            cell_rhs(i) -=
-              tau * phi_u[q][i] * coeff * old_solution_laplacians[q] * JxW;
+            cell_rhs(i) -= tau * phi_u[q][i] * strong_residual[q] * JxW;
+          }
+      }
+  };
+};
+
+
+template <int dim>
+class AssemblerStabilization : public AssemblerBase<dim>
+{
+public:
+  virtual void
+  assemble(MinimalSurfaceScratch<dim> &scratch) override
+  {
+    const auto &phi_u           = scratch.phi_u;
+    const auto &laplacian_phi_u = scratch.laplacian_phi_u;
+
+    const auto &old_solution_laplacians = scratch.old_solution_laplacians;
+    const auto &old_solution_gradients  = scratch.old_solution_gradients;
+
+    const unsigned int n_q_points = scratch.n_q_points;
+    const unsigned int n_dofs     = scratch.n_dofs;
+
+    auto &strong_residual = scratch.strong_residual;
+    auto &strong_jacobian = scratch.strong_jacobian;
+
+    for (unsigned int q = 0; q < n_q_points; ++q)
+      {
+        const double coeff = 1.0 / std::sqrt(1 + old_solution_gradients[q] *
+                                                   old_solution_gradients[q]);
+
+        for (unsigned int j = 0; j < n_dofs; ++j)
+          {
+            strong_jacobian[q][j] += coeff * laplacian_phi_u[q][j];
+          }
+
+        for (unsigned int i = 0; i < n_dofs; ++i)
+          {
+            strong_residual[q] +=
+              phi_u[q][i] * coeff * old_solution_laplacians[q];
           }
       }
   };

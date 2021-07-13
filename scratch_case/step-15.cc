@@ -229,14 +229,21 @@ namespace Step15
     std::vector<types::global_dof_index> local_dof_indices(dofs_per_cell);
 
     MinimalSurfaceScratch<dim> scratch(n_q_points, dofs_per_cell);
-    auto &                     cell_matrix = scratch.get_cell_matrix();
-    auto &                     cell_rhs    = scratch.get_cell_rhs();
+    auto &                     cell_matrix = scratch.cell_matrix;
+    auto &                     cell_rhs    = scratch.cell_rhs;
     assembler_list.clear();
-    assembler_list.push_back(std::make_shared<AssemblerClassic<dim>>());
+    assembler_list.push_back(std::make_shared<AssemblerStabilization<dim>>());
+    assembler_list.push_back(std::make_shared<AssemblerMain<dim>>());
 
     for (const auto &cell : dof_handler.active_cell_iterators())
       {
         fe_values.reinit(cell);
+        if (dim == 2)
+          scratch.cell_size =
+            std::sqrt(4. * cell->measure() / M_PI) / fe.degree;
+        else if (dim == 3)
+          scratch.cell_size =
+            pow(6 * cell->measure() / M_PI, 1. / 3.) / fe.degree;
 
         /*
          *  Scratch filling
@@ -244,16 +251,17 @@ namespace Step15
          * for the assemblers
          */
         //
-        fe_values.get_function_gradients(current_solution,
-                                         scratch.get_solution_gradients());
+        auto &solution_gradients  = scratch.old_solution_gradients;
+        auto &solution_laplacians = scratch.old_solution_laplacians;
+        fe_values.get_function_gradients(current_solution, solution_gradients);
         fe_values.get_function_laplacians(current_solution,
-                                          scratch.get_solution_laplacians());
+                                          solution_laplacians);
 
-        auto &phi_u_s           = scratch.get_phi_u();
-        auto &grad_phi_u_s      = scratch.get_grad_phi_u();
-        auto &hess_phi_u_s      = scratch.get_hess_phi_u();
-        auto &laplacian_phi_u_s = scratch.get_laplacian_phi_u();
-        auto &JxW               = scratch.get_JxW();
+        auto &phi_u_s           = scratch.phi_u;
+        auto &grad_phi_u_s      = scratch.grad_phi_u;
+        auto &hess_phi_u_s      = scratch.hess_phi_u;
+        auto &laplacian_phi_u_s = scratch.laplacian_phi_u;
+        auto &JxW               = scratch.JxW;
 
         for (unsigned int q = 0; q < n_q_points; ++q)
           {
