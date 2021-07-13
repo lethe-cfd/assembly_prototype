@@ -115,7 +115,7 @@ namespace Step15
     void
     set_boundary_values();
     double
-    compute_residual(const double alpha) const;
+    compute_residual(const double alpha);
     double
     determine_step_length() const;
     void
@@ -244,8 +244,9 @@ namespace Step15
 
     FEValues<dim> fe_values(fe,
                             quadrature_formula,
-                            update_gradients | update_quadrature_points |
-                              update_JxW_values | update_hessians);
+                            update_values | update_gradients |
+                              update_quadrature_points | update_JxW_values |
+                              update_hessians);
 
     const unsigned int dofs_per_cell = fe.n_dofs_per_cell();
     const unsigned int n_q_points    = quadrature_formula.size();
@@ -270,6 +271,12 @@ namespace Step15
         cell_matrix = 0;
         cell_rhs    = 0;
 
+        double h;
+        if (dim == 2)
+          h = std::sqrt(4. * cell->measure() / M_PI) / fe.degree;
+        else if (dim == 3)
+          h = pow(6 * cell->measure() / M_PI, 1. / 3.) / fe.degree;
+
         fe_values.reinit(cell);
 
         // Get old solution gradients and laplacians
@@ -293,10 +300,14 @@ namespace Step15
 
             for (unsigned int k = 0; k < dofs_per_cell; ++k)
               {
+                phi_u[k]           = fe_values.shape_value(k, q);
                 grad_phi_u[k]      = fe_values.shape_grad(k, q);
                 hess_phi_u[k]      = fe_values.shape_hessian(k, q);
                 laplacian_phi_u[k] = trace(hess_phi_u[k]);
               }
+
+            const double tau =
+              1. / std::sqrt(9 * std::pow(4 * coeff / (h * h), 2));
 
             const double JxW = fe_values.JxW(q);
 
@@ -315,12 +326,20 @@ namespace Step15
                             * old_solution_gradients[q]) //      * \nabla u_n)
                          * old_solution_gradients[q]))   //   * \nabla u_n)))
                        * JxW);                           // * dx
+
+                    // Pseudo GLS term
+                    cell_matrix(i, j) +=
+                      tau * phi_u[i] * coeff * laplacian_phi_u[j] * JxW;
                   }
 
                 cell_rhs(i) -= (grad_phi_u[i]               // \nabla \phi_i
                                 * coeff                     // * a_n
                                 * old_solution_gradients[q] // * u_n
                                 * JxW);                     // * dx
+
+                // Pseudo GLS term
+                cell_rhs(i) -=
+                  tau * phi_u[i] * coeff * old_solution_laplacians[q] * JxW;
               }
           }
 
@@ -528,8 +547,10 @@ namespace Step15
   // operations:
   template <int dim>
   double
-  MinimalSurfaceProblem<dim>::compute_residual(const double alpha) const
+  MinimalSurfaceProblem<dim>::compute_residual(const double alpha)
   {
+    TimerOutput::Scope t(computing_timer, "Residual assembly");
+
     Vector<double> residual(dof_handler.n_dofs());
 
     Vector<double> evaluation_point(dof_handler.n_dofs());
@@ -539,14 +560,17 @@ namespace Step15
     const QGauss<dim> quadrature_formula(fe.degree + 1);
     FEValues<dim>     fe_values(fe,
                             quadrature_formula,
-                            update_gradients | update_quadrature_points |
-                              update_JxW_values);
+                            update_values | update_gradients |
+                              update_quadrature_points | update_JxW_values |
+                              update_hessians);
 
     const unsigned int dofs_per_cell = fe.n_dofs_per_cell();
     const unsigned int n_q_points    = quadrature_formula.size();
 
     Vector<double>              cell_residual(dofs_per_cell);
     std::vector<Tensor<1, dim>> gradients(n_q_points);
+    std::vector<double>         laplacians(n_q_points);
+
 
     std::vector<types::global_dof_index> local_dof_indices(dofs_per_cell);
 
@@ -555,12 +579,20 @@ namespace Step15
         cell_residual = 0;
         fe_values.reinit(cell);
 
+        double h;
+        if (dim == 2)
+          h = std::sqrt(4. * cell->measure() / M_PI) / fe.degree;
+        else if (dim == 3)
+          h = pow(6 * cell->measure() / M_PI, 1. / 3.) / fe.degree;
+
         // The actual computation is much as in
         // <code>assemble_system()</code>. We first evaluate the gradients of
         // $u^n+\alpha^n\,\delta u^n$ at the quadrature points, then compute
         // the coefficient $a_n$, and then plug it all into the formula for
         // the residual:
         fe_values.get_function_gradients(evaluation_point, gradients);
+        fe_values.get_function_laplacians(evaluation_point, laplacians);
+
 
 
         for (unsigned int q = 0; q < n_q_points; ++q)
@@ -568,11 +600,19 @@ namespace Step15
             const double coeff =
               1. / std::sqrt(1 + gradients[q] * gradients[q]);
 
+            const double tau =
+              1. / std::sqrt(9 * std::pow(4 * coeff / (h * h), 2));
+
             for (unsigned int i = 0; i < dofs_per_cell; ++i)
-              cell_residual(i) -= (fe_values.shape_grad(i, q) // \nabla \phi_i
-                                   * coeff                    // * a_n
-                                   * gradients[q]             // * u_n
-                                   * fe_values.JxW(q));       // * dx
+              {
+                cell_residual(i) -= (fe_values.shape_grad(i, q) // \nabla \phi_i
+                                     * coeff                    // * a_n
+                                     * gradients[q]             // * u_n
+                                     * fe_values.JxW(q));       // * dx
+
+                cell_residual(i) -= tau * fe_values.shape_value(i, q) * coeff *
+                                    laplacians[q] * fe_values.JxW(q);
+              }
           }
 
         cell->get_dof_indices(local_dof_indices);
@@ -740,9 +780,6 @@ main()
   try
     {
       using namespace Step15;
-
-      // MinimalSurfaceProblem<2> laplace_problem_2d;
-      // laplace_problem_2d.run();
 
       MinimalSurfaceProblem<3> laplace_problem_3d;
       laplace_problem_3d.run();
