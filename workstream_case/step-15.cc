@@ -23,9 +23,11 @@
 // The first few files have already been covered in previous examples and will
 // thus not be further commented on.
 #include <deal.II/base/function.h>
+#include <deal.II/base/multithread_info.h>
 #include <deal.II/base/quadrature_lib.h>
 #include <deal.II/base/timer.h>
 #include <deal.II/base/utilities.h>
+#include <deal.II/base/work_stream.h>
 
 #include <deal.II/dofs/dof_handler.h>
 #include <deal.II/dofs/dof_tools.h>
@@ -82,6 +84,13 @@ namespace Step15
     setup_system(const bool initial_step);
     void
     assemble_system();
+    void
+    local_assemble_system(
+      const typename DoFHandler<dim>::active_cell_iterator &cell,
+      MinimalSurfaceAssemblyScratchData<dim> &              scratch_data,
+      MinimalSurfaceAssemblyCopyData &                      copy_data);
+    void
+    copy_local_to_global(const MinimalSurfaceAssemblyCopyData &copy_data);
     void
     solve();
     void
@@ -211,94 +220,26 @@ namespace Step15
   void
   MinimalSurfaceProblem<dim>::assemble_system()
   {
+    QGauss<dim>    quadrature_formula(fe.degree + 1);
+    MappingQ1<dim> mapping;
+
+
     TimerOutput::Scope t(computing_timer, "Matrix Assembly");
-    const QGauss<dim>  quadrature_formula(fe.degree + 1);
 
-    system_matrix = 0;
-    system_rhs    = 0;
-
-    FEValues<dim> fe_values(fe,
-                            quadrature_formula,
-                            update_values | update_gradients |
-                              update_quadrature_points | update_JxW_values |
-                              update_hessians);
-
-    const unsigned int dofs_per_cell = fe.n_dofs_per_cell();
-    const unsigned int n_q_points    = quadrature_formula.size();
-
-    std::vector<types::global_dof_index> local_dof_indices(dofs_per_cell);
-
-    MinimalSurfaceScratch<dim> scratch(n_q_points, dofs_per_cell);
-    auto &                     cell_matrix = scratch.cell_matrix;
-    auto &                     cell_rhs    = scratch.cell_rhs;
     assembler_list.clear();
-    assembler_list.push_back(std::make_shared<AssemblerStabilization<dim>>());
+    // assembler_list.push_back(std::make_shared<AssemblerStabilization<dim>>());
     assembler_list.push_back(std::make_shared<AssemblerMain<dim>>());
 
-    for (const auto &cell : dof_handler.active_cell_iterators())
-      {
-        fe_values.reinit(cell);
-        if (dim == 2)
-          scratch.cell_size =
-            std::sqrt(4. * cell->measure() / M_PI) / fe.degree;
-        else if (dim == 3)
-          scratch.cell_size =
-            pow(6 * cell->measure() / M_PI, 1. / 3.) / fe.degree;
 
-        /*
-         *  Scratch filling
-         *  This section fills the scratch with the data that will be necessary
-         * for the assemblers
-         */
-        //
-        auto &solution_gradients  = scratch.old_solution_gradients;
-        auto &solution_laplacians = scratch.old_solution_laplacians;
-        fe_values.get_function_gradients(current_solution, solution_gradients);
-        fe_values.get_function_laplacians(current_solution,
-                                          solution_laplacians);
-
-        auto &phi_u_s           = scratch.phi_u;
-        auto &grad_phi_u_s      = scratch.grad_phi_u;
-        auto &hess_phi_u_s      = scratch.hess_phi_u;
-        auto &laplacian_phi_u_s = scratch.laplacian_phi_u;
-        auto &JxW               = scratch.JxW;
-
-        for (unsigned int q = 0; q < n_q_points; ++q)
-          {
-            JxW[q] = fe_values.JxW(q);
-            for (unsigned int k = 0; k < dofs_per_cell; ++k)
-              {
-                phi_u_s[q][k]           = fe_values.shape_value(k, q);
-                grad_phi_u_s[q][k]      = fe_values.shape_grad(k, q);
-                hess_phi_u_s[q][k]      = fe_values.shape_hessian(k, q);
-                laplacian_phi_u_s[q][k] = trace(hess_phi_u_s[q][k]);
-              }
-          }
-        scratch.reset_matrix_and_rhs();
-        //*********************************************************************
-
-        for (auto &assembler : assembler_list)
-          {
-            assembler->assemble(scratch);
-          }
-
-        cell->get_dof_indices(local_dof_indices);
-        for (unsigned int i = 0; i < dofs_per_cell; ++i)
-          {
-            for (unsigned int j = 0; j < dofs_per_cell; ++j)
-              system_matrix.add(local_dof_indices[i],
-                                local_dof_indices[j],
-                                cell_matrix(i, j));
-
-            system_rhs(local_dof_indices[i]) += cell_rhs(i);
-          }
-      }
-
-    // Finally, we remove hanging nodes from the system and apply zero
-    // boundary values to the linear system that defines the Newton updates
-    // $\delta u^n$:
-    hanging_node_constraints.condense(system_matrix);
-    hanging_node_constraints.condense(system_rhs);
+    WorkStream::run(dof_handler.begin_active(),
+                    dof_handler.end(),
+                    *this,
+                    &MinimalSurfaceProblem::local_assemble_system,
+                    &MinimalSurfaceProblem::copy_local_to_global,
+                    MinimalSurfaceAssemblyScratchData<dim>(fe,
+                                                           quadrature_formula,
+                                                           mapping),
+                    MinimalSurfaceAssemblyCopyData());
 
     std::map<types::global_dof_index, double> boundary_values;
     VectorTools::interpolate_boundary_values(dof_handler,
@@ -310,7 +251,91 @@ namespace Step15
                                        newton_update,
                                        system_rhs);
   }
+  template <int dim>
+  void
+  MinimalSurfaceProblem<dim>::local_assemble_system(
+    const typename DoFHandler<dim>::active_cell_iterator &cell,
+    MinimalSurfaceAssemblyScratchData<dim> &              scratch_data,
+    MinimalSurfaceAssemblyCopyData &                      copy_data)
+  {
+    scratch_data.fe_values.reinit(cell);
 
+    const unsigned int n_q_points =
+      scratch_data.fe_values.get_quadrature().size();
+    const unsigned int dofs_per_cell =
+      scratch_data.fe_values.get_fe().n_dofs_per_cell();
+    MinimalSurfaceAssemblyCacheData<dim> cache_data(n_q_points, dofs_per_cell);
+    if (dim == 2)
+      cache_data.cell_size = std::sqrt(4. * cell->measure() / M_PI) / fe.degree;
+    else if (dim == 3)
+      cache_data.cell_size =
+        pow(6 * cell->measure() / M_PI, 1. / 3.) / fe.degree;
+
+
+    //************************************************************
+    auto &solution_gradients  = cache_data.old_solution_gradients;
+    auto &solution_laplacians = cache_data.old_solution_laplacians;
+    scratch_data.fe_values.get_function_gradients(current_solution,
+                                                  solution_gradients);
+    scratch_data.fe_values.get_function_laplacians(current_solution,
+                                                   solution_laplacians);
+
+    auto &phi_u           = cache_data.phi_u;
+    auto &grad_phi_u      = cache_data.grad_phi_u;
+    auto &hess_phi_u      = cache_data.hess_phi_u;
+    auto &laplacian_phi_u = cache_data.laplacian_phi_u;
+    auto &JxW             = cache_data.JxW;
+
+
+
+    for (unsigned int q = 0; q < n_q_points; ++q)
+      {
+        JxW[q] = scratch_data.fe_values.JxW(q);
+        for (unsigned int k = 0; k < dofs_per_cell; ++k)
+          {
+            phi_u[q][k]           = scratch_data.fe_values.shape_value(k, q);
+            grad_phi_u[q][k]      = scratch_data.fe_values.shape_grad(k, q);
+            hess_phi_u[q][k]      = scratch_data.fe_values.shape_hessian(k, q);
+            laplacian_phi_u[q][k] = trace(hess_phi_u[q][k]);
+          }
+      }
+    copy_data.cell_matrix.reinit(dofs_per_cell, dofs_per_cell);
+    copy_data.cell_rhs.reinit(dofs_per_cell);
+    copy_data.strong_residual.reinit(n_q_points);
+    copy_data.strong_jacobian.resize(n_q_points, Vector<double>(dofs_per_cell));
+    copy_data.local_dof_indices.resize(dofs_per_cell);
+
+    copy_data.cell_matrix = 0;
+    copy_data.cell_rhs    = 0;
+    for (unsigned int q = 0; q < n_q_points; ++q)
+      {
+        copy_data.strong_residual[q] = 0;
+        copy_data.strong_jacobian[q] = 0;
+      }
+
+
+    //*********************************************************************
+    for (auto &assembler : assembler_list)
+      {
+        assembler->assemble(cache_data, copy_data);
+      }
+
+    cell->get_dof_indices(copy_data.local_dof_indices);
+  }
+
+
+  template <int dim>
+  void
+  MinimalSurfaceProblem<dim>::copy_local_to_global(
+    const MinimalSurfaceAssemblyCopyData &copy_data)
+  {
+    hanging_node_constraints.distribute_local_to_global(
+      copy_data.cell_matrix,
+      copy_data.cell_rhs,
+      copy_data.local_dof_indices,
+      system_matrix,
+      system_rhs);
+  }
 
 
   // @sect4{MinimalSurfaceProblem::solve}
@@ -332,6 +357,8 @@ namespace Step15
     preconditioner.initialize(system_matrix, 1.2);
 
     solver.solve(system_matrix, newton_update, system_rhs, preconditioner);
+
+
 
     hanging_node_constraints.distribute(newton_update);
 
@@ -704,8 +731,6 @@ namespace Step15
 
         ++refinement_cycle;
         std::cout << std::endl;
-        std::cout << "last residual norm " << last_residual_norm << std::endl;
-
       }
     while (last_residual_norm > 2.5e-2);
   }
@@ -721,7 +746,7 @@ main()
   try
     {
       using namespace Step15;
-
+      MultithreadInfo::set_thread_limit(16);
       MinimalSurfaceProblem<3> laplace_problem_3d;
       laplace_problem_3d.run();
     }
