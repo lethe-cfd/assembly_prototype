@@ -12,28 +12,6 @@ using namespace dealii;
 #ifndef scratch_h
 #  define scratch_h
 
-template <int dim>
-class MinimalSurfaceAssemblyScratchData
-{
-public:
-  MinimalSurfaceAssemblyScratchData(const FE_Q<dim> &fe,
-                                    QGauss<dim> &    quadrature_formula,
-                                    MappingQ1<dim> & mapping)
-    : fe_values(mapping,
-                fe,
-                quadrature_formula,
-                update_values | update_gradients | update_quadrature_points |
-                  update_JxW_values | update_hessians){};
-
-  MinimalSurfaceAssemblyScratchData(const MinimalSurfaceAssemblyScratchData &sd)
-    : fe_values(sd.fe_values.get_mapping(),
-                sd.fe_values.get_fe(),
-                sd.fe_values.get_quadrature(),
-                update_values | update_gradients | update_quadrature_points |
-                  update_JxW_values | update_hessians){};
-
-  FEValues<dim> fe_values;
-};
 
 template <int dim>
 class MinimalSurfaceAssemblyCacheData
@@ -64,6 +42,36 @@ public:
   std::vector<std::vector<double>>         phi_u;
   std::vector<std::vector<Tensor<1, dim>>> grad_phi_u;
 };
+
+template <int dim>
+class MinimalSurfaceAssemblyScratchData
+{
+public:
+  MinimalSurfaceAssemblyScratchData(const FE_Q<dim> &fe,
+                                    QGauss<dim> &    quadrature_formula,
+                                    MappingQ1<dim> & mapping)
+    : fe_values(mapping,
+                fe,
+                quadrature_formula,
+                update_values | update_gradients | update_quadrature_points |
+                  update_JxW_values | update_hessians)
+    , cache_data(fe_values.get_quadrature().size(),
+                 fe_values.get_fe().n_dofs_per_cell()){};
+
+  MinimalSurfaceAssemblyScratchData(const MinimalSurfaceAssemblyScratchData &sd)
+    : fe_values(sd.fe_values.get_mapping(),
+                sd.fe_values.get_fe(),
+                sd.fe_values.get_quadrature(),
+                update_values | update_gradients | update_quadrature_points |
+                  update_JxW_values | update_hessians)
+    , cache_data(fe_values.get_quadrature().size(),
+                 fe_values.get_fe().n_dofs_per_cell()){};
+
+  FEValues<dim>                        fe_values;
+  MinimalSurfaceAssemblyCacheData<dim> cache_data;
+};
+
+
 
 class MinimalSurfaceAssemblyCopyData
 {

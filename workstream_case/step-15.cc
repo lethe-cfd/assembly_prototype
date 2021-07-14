@@ -227,7 +227,7 @@ namespace Step15
     TimerOutput::Scope t(computing_timer, "Matrix Assembly");
 
     assembler_list.clear();
-    // assembler_list.push_back(std::make_shared<AssemblerStabilization<dim>>());
+    assembler_list.push_back(std::make_shared<AssemblerStabilization<dim>>());
     assembler_list.push_back(std::make_shared<AssemblerMain<dim>>());
 
 
@@ -264,7 +264,7 @@ namespace Step15
       scratch_data.fe_values.get_quadrature().size();
     const unsigned int dofs_per_cell =
       scratch_data.fe_values.get_fe().n_dofs_per_cell();
-    MinimalSurfaceAssemblyCacheData<dim> cache_data(n_q_points, dofs_per_cell);
+    MinimalSurfaceAssemblyCacheData<dim> &cache_data = scratch_data.cache_data;
     if (dim == 2)
       cache_data.cell_size = std::sqrt(4. * cell->measure() / M_PI) / fe.degree;
     else if (dim == 3)
